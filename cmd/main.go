@@ -45,7 +45,7 @@ func main() {
 
 func handle(db *emt.WdDB, ethc *ethclient.Client, addr string) error {
 	// check kv
-	initValue := emt.ToLittleEndianBytes(1)
+	initValue := emt.ToBigEndianBytes(1)
 
 	if err := db.GetOrSet([]byte("id"), initValue); err != nil {
 		return err
@@ -60,7 +60,7 @@ func handle(db *emt.WdDB, ethc *ethclient.Client, addr string) error {
 	if n, err := db.GetRawDB().Get([]byte("nonce"), nil); err != nil {
 		return err
 	} else {
-		if nn, err1 := emt.FromLittleEndianBytes(n); err1 != nil {
+		if nn, err1 := emt.FromBigEndianBytes(n); err1 != nil {
 			return err1
 		} else {
 			dbNonce = nn
