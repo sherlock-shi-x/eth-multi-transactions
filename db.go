@@ -1,9 +1,12 @@
 package eth_multi_transactions
 
 import (
+	"bytes"
+	"fmt"
 	"math/big"
 
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 type WdDB struct {
@@ -21,13 +24,14 @@ func (w *WdDB) GetRawDB() *leveldb.DB {
 }
 
 type DbWithdrawalObj struct {
-	address  string
-	amount   *big.Int
-	nonce    uint64
-	status   uint64
-	hash     string
-	created  uint64
-	modified uint64
+	Id       uint64
+	Address  string
+	Amount   *big.Int
+	Nonce    uint64
+	Status   uint64
+	Hash     string
+	Created  uint64
+	Modified uint64
 }
 
 func (w *WdDB) BatchInsert(objs []*DbWithdrawalObj) error {
@@ -44,13 +48,13 @@ func (w *WdDB) BatchInsert(objs []*DbWithdrawalObj) error {
 			}
 
 			_id := ToBigEndianBytes(id)
-			_address := []byte(o.address)
-			_amount := o.amount.Bytes()
-			_nonce := ToBigEndianBytes(o.nonce)
-			_status := ToBigEndianBytes(o.status)
-			_hash := []byte(o.hash)
-			_created := ToBigEndianBytes(o.created)
-			_modified := ToBigEndianBytes(o.modified)
+			_address := []byte(o.Address)
+			_amount := o.Amount.Bytes()
+			_nonce := ToBigEndianBytes(o.Nonce)
+			_status := ToBigEndianBytes(o.Status)
+			_hash := []byte(o.Hash)
+			_created := ToBigEndianBytes(o.Created)
+			_modified := ToBigEndianBytes(o.Modified)
 
 			if err := tx.Put(append([]byte("address-"), _id...), _address, nil); err != nil {
 				return err
@@ -94,21 +98,105 @@ func (w *WdDB) Insert(
 	modified uint64,
 ) error {
 	tmp := DbWithdrawalObj{
-		address:  address,
-		amount:   amount,
-		nonce:    nonce,
-		status:   status,
-		hash:     hash,
-		created:  created,
-		modified: modified,
+		Address:  address,
+		Amount:   amount,
+		Nonce:    nonce,
+		Status:   status,
+		Hash:     hash,
+		Created:  created,
+		Modified: modified,
 	}
 	var ans []*DbWithdrawalObj
 	ans = append(ans, &tmp)
 	return w.BatchInsert(ans)
 }
 
-func (w *WdDB) GetNewNonce() uint64 {
-	return 0
+func (w *WdDB) GetWdObjById(id uint64) (*DbWithdrawalObj, error) {
+	ans := DbWithdrawalObj{Id: id}
+	idInBytes := ToBigEndianBytes(id)
+
+	if v, err := w.db.Get(append([]byte("address-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Address = string(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("amount-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Amount = big.NewInt(0).SetBytes(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("nonce-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Nonce, _ = FromBigEndianBytes(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("status-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Status, _ = FromBigEndianBytes(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("hash-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Hash = string(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("created-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Created, _ = FromBigEndianBytes(v)
+	}
+
+	if v, err := w.db.Get(append([]byte("modified-"), idInBytes...), nil); err != nil {
+		return nil, err
+	} else {
+		ans.Modified, _ = FromBigEndianBytes(v)
+	}
+	return &ans, nil
+}
+
+func (w *WdDB) CompareAndSwapStatus(key []byte, from, to uint64) error {
+	rawValue, err := w.db.Get(key, nil)
+	if err != nil {
+		return err
+	}
+
+	value, err := FromBigEndianBytes(rawValue)
+	if err != nil {
+		return err
+	}
+
+	if value != from {
+		return fmt.Errorf("mismatch value: expected:%v real:%v", from, value)
+	}
+
+	return w.db.Put(key, ToBigEndianBytes(to), nil)
+}
+
+func (w *WdDB) GetUnhandledRecordsId() ([]uint64, error) {
+	itr := w.db.NewIterator(util.BytesPrefix([]byte("status-")), nil)
+	initialStatus := ToBigEndianBytes(0)
+
+	var ans []uint64
+
+	for itr.Next() {
+		if bytes.Compare(initialStatus, itr.Value()) == 0 {
+			v, err := FromBigEndianBytes(itr.Key()[7:])
+			if err != nil {
+				return nil, err
+			}
+			ans = append(ans, v)
+		}
+	}
+	itr.Release()
+	if err := itr.Error(); err != nil {
+		return nil, err
+	}
+	return ans, nil
 }
 
 func (w *WdDB) GetAndIncreasePrimaryKey(tx *leveldb.Transaction) (uint64, error) {
