@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	"github.com/syndtr/goleveldb/leveldb"
 
 	emt "github.com/haihongs/eth-multi-transactions"
@@ -30,10 +31,21 @@ type dest struct {
 func main() {
 	logger.Init(logger.DebugLevel)
 
+	// TODO: flag parse
 	path := "./db"
 	nodeEndpoint := ""
-	addr := ""
-	var users []*dest
+	addr := "0xa"
+	sk := "0x0"
+	users := []*dest{
+		&dest{addr: "0x1f3b29aE0d5eDAe9bb148537D4ED2B12BEdDf8B3", percent: big.NewInt(10)},
+		&dest{addr: "0x2f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x3f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x4f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x5f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x6f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x7f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
+		&dest{addr: "0x8f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(30)},
+	}
 
 	// register db
 	db, err := leveldb.OpenFile(path, nil)
@@ -52,55 +64,93 @@ func main() {
 
 	// generate withdrawals
 	c := cron.New()
-	if _, err := c.AddFunc("@every 12h", func() { generateWithdrawals(wdDB, ethc, addr, users) }); err != nil {
+	if _, err := c.AddFunc("@every 24h", func() { generateWithdrawals(wdDB, ethc, addr, users) }); err != nil {
 		logger.Fatal("failed to init cron", "err", err)
 	}
 	c.Start()
 
 	// main loop
 	for {
-		if err := handle(wdDB, ethc, addr); err != nil {
+		if err := handle(wdDB, ethc, addr, sk); err != nil {
 			logger.Error("failed to handle it", "err", err)
 		}
 		time.Sleep(60 * time.Second)
 	}
 }
 
-func handle(db *emt.WdDB, ethc *ethclient.Client, addr string) error {
-	// check kv
-	initValue := emt.ToBigEndianBytes(1)
-
-	if err := db.GetOrSet([]byte("kv-id"), initValue); err != nil {
+func handle(db *emt.WdDB, ethc *ethclient.Client, addr, sk string) error {
+	fromAddr := common.HexToAddress(addr)
+	prvKey, err := crypto.HexToECDSA(sk)
+	if err != nil {
 		return err
 	}
 
-	if err := db.GetOrSet([]byte("kv-nonce"), initValue); err != nil {
-		return err
-	}
+	// TODO: move check into main part
+	{
+		// check kv
+		initValue := emt.ToBigEndianBytes(1)
 
-	// calibrate nonce
-	var dbNonce uint64
-	if n, err := db.GetRawDB().Get([]byte("kv-nonce"), nil); err != nil {
-		return err
-	} else {
-		if nn, err1 := emt.FromBigEndianBytes(n); err1 != nil {
-			return err1
+		if err := db.GetOrSet([]byte("kv-id"), initValue); err != nil {
+			return err
+		}
+
+		if err := db.GetOrSet([]byte("kv-nonce"), initValue); err != nil {
+			return err
+		}
+
+		// calibrate nonce
+		var dbNonce uint64
+		if n, err := db.GetRawDB().Get([]byte("kv-nonce"), nil); err != nil {
+			return err
 		} else {
-			dbNonce = nn
+			if nn, err1 := emt.FromBigEndianBytes(n); err1 != nil {
+				return err1
+			} else {
+				dbNonce = nn
+			}
+		}
+
+		var blockchainNonce uint64
+		if b, err := ethc.NonceAt(context.Background(), fromAddr, nil); err != nil {
+			return err
+		} else {
+			blockchainNonce = b
+		}
+
+		if dbNonce < blockchainNonce {
+			return fmt.Errorf("wrong nonce count, db: %v blockchain: %v", dbNonce, blockchainNonce)
 		}
 	}
 
-	var blockchainNonce uint64
-	if b, err := ethc.NonceAt(context.Background(), common.HexToAddress(addr), nil); err != nil {
+	// handle
+	ids, err := db.GetUnhandledRecordsId()
+	if err != nil {
 		return err
-	} else {
-		blockchainNonce = b
 	}
 
-	if dbNonce < blockchainNonce {
-		return fmt.Errorf("wrong nonce count, db: %v blockchain: %v", dbNonce, blockchainNonce)
-	}
+	for _, id := range ids {
+		if err := db.CompareAndSwapStatus(append([]byte("status-"), emt.ToBigEndianBytes(id)...), 0, 1); err != nil {
+			logger.Error("failed to CAS status", "err", err, "id", id)
+			continue
+		}
 
+		obj, err := db.GetWdObjById(id)
+		if err != nil {
+			logger.Error("failed to get wd obj", "err", err, "id", id)
+			continue
+		}
+
+		txId, err := emt.SendEthTransaction(obj, ethc, fromAddr, prvKey)
+		if err != nil {
+			logger.Error("failed to send eth transaction", "err", err, "id", id)
+			continue
+		}
+
+		if err := emt.PollingTransaction(ethc, txId, 3, 40*time.Minute); err != nil {
+			logger.Error("failed to confirm eth transaction", "err", err, "id", id)
+			continue
+		}
+	}
 	return nil
 }
 
@@ -139,6 +189,10 @@ func generateWithdrawals(wdDB *emt.WdDB, ethc *ethclient.Client, addr string, us
 			}
 		}
 
-		// set nonce
+		logger.Info("succeed to generate withdrawals")
+
+		// TODO: set nonce
+		// TODO: dingding notification
+		return
 	}
 }
