@@ -38,7 +38,7 @@ func (w *WdDB) BatchInsert(objs []*DbWithdrawalObj) error {
 
 	e := func() error {
 		for _, o := range objs {
-			id, err := w.GetAndIncreasePrimaryKey()
+			id, err := w.GetAndIncreasePrimaryKey(tx)
 			if err != nil {
 				return err
 			}
@@ -111,8 +111,8 @@ func (w *WdDB) GetNewNonce() uint64 {
 	return 0
 }
 
-func (w *WdDB) GetAndIncreasePrimaryKey() (uint64, error) {
-	idRaw, err := w.db.Get([]byte("kv-id"), nil)
+func (w *WdDB) GetAndIncreasePrimaryKey(tx *leveldb.Transaction) (uint64, error) {
+	idRaw, err := tx.Get([]byte("kv-id"), nil)
 	if err != nil {
 		return 0, err
 	}
@@ -123,7 +123,7 @@ func (w *WdDB) GetAndIncreasePrimaryKey() (uint64, error) {
 	}
 
 	id += 1
-	return id, w.db.Put([]byte("kv-id"), ToBigEndianBytes(id), nil)
+	return id, tx.Put([]byte("kv-id"), ToBigEndianBytes(id), nil)
 }
 
 func (w *WdDB) GetOrSet(key []byte, initValue []byte) error {
