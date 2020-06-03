@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"math/big"
 	"time"
 
@@ -34,17 +32,14 @@ func main() {
 	// TODO: flag parse
 	path := "./db"
 	nodeEndpoint := ""
-	addr := "0xa"
-	sk := "0x0"
+	addr := ""
+	sk := ""
 	users := []*dest{
-		&dest{addr: "0x1f3b29aE0d5eDAe9bb148537D4ED2B12BEdDf8B3", percent: big.NewInt(10)},
-		&dest{addr: "0x2f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x3f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x4f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x5f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x6f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x7f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(10)},
-		&dest{addr: "0x8f3b29aE0d5eDAe9bdb148537D4ED2B12BEdDf8B", percent: big.NewInt(30)},
+		&dest{addr: "0x793", percent: big.NewInt(1)},
+		&dest{addr: "0x793", percent: big.NewInt(1)},
+		&dest{addr: "0x793", percent: big.NewInt(1)},
+		&dest{addr: "0x793", percent: big.NewInt(1)},
+		&dest{addr: "0x793", percent: big.NewInt(2)},
 	}
 
 	// register db
@@ -62,6 +57,20 @@ func main() {
 		logger.Fatal("failed to init ethclient", "err", err)
 	}
 
+	// initial condition check
+	{
+		// check kv
+		initValue := emt.ToBigEndianBytes(1)
+
+		if err := wdDB.GetOrSet([]byte("kv-id"), initValue); err != nil {
+			logger.Fatal("condition check failed", "err", err)
+		}
+
+		if err := wdDB.GetOrSet([]byte("kv-nonce"), initValue); err != nil {
+			logger.Fatal("condition check failed", "err", err)
+		}
+	}
+
 	// generate withdrawals
 	c := cron.New()
 	if _, err := c.AddFunc("@every 24h", func() { generateWithdrawals(wdDB, ethc, addr, users) }); err != nil {
@@ -74,7 +83,7 @@ func main() {
 		if err := handle(wdDB, ethc, addr, sk); err != nil {
 			logger.Error("failed to handle it", "err", err)
 		}
-		time.Sleep(60 * time.Second)
+		time.Sleep(5 * 60 * time.Second)
 	}
 }
 
@@ -85,51 +94,16 @@ func handle(db *emt.WdDB, ethc *ethclient.Client, addr, sk string) error {
 		return err
 	}
 
-	// TODO: move check into main part
-	{
-		// check kv
-		initValue := emt.ToBigEndianBytes(1)
-
-		if err := db.GetOrSet([]byte("kv-id"), initValue); err != nil {
-			return err
-		}
-
-		if err := db.GetOrSet([]byte("kv-nonce"), initValue); err != nil {
-			return err
-		}
-
-		// calibrate nonce
-		var dbNonce uint64
-		if n, err := db.GetRawDB().Get([]byte("kv-nonce"), nil); err != nil {
-			return err
-		} else {
-			if nn, err1 := emt.FromBigEndianBytes(n); err1 != nil {
-				return err1
-			} else {
-				dbNonce = nn
-			}
-		}
-
-		var blockchainNonce uint64
-		if b, err := ethc.NonceAt(context.Background(), fromAddr, nil); err != nil {
-			return err
-		} else {
-			blockchainNonce = b
-		}
-
-		if dbNonce < blockchainNonce {
-			return fmt.Errorf("wrong nonce count, db: %v blockchain: %v", dbNonce, blockchainNonce)
-		}
-	}
-
 	// handle
 	ids, err := db.GetUnhandledRecordsId()
 	if err != nil {
 		return err
 	}
 
+	logger.Info("start handling")
 	for _, id := range ids {
-		if err := db.CompareAndSwapStatus(append([]byte("status-"), emt.ToBigEndianBytes(id)...), 0, 1); err != nil {
+		key := append([]byte("status-"), emt.ToBigEndianBytes(id)...)
+		if err := db.CompareAndSwapStatus(key, 0, 1); err != nil {
 			logger.Error("failed to CAS status", "err", err, "id", id)
 			continue
 		}
@@ -145,12 +119,19 @@ func handle(db *emt.WdDB, ethc *ethclient.Client, addr, sk string) error {
 			logger.Error("failed to send eth transaction", "err", err, "id", id)
 			continue
 		}
+		logger.Info("broadcast succeed", "txid", txId)
 
 		if err := emt.PollingTransaction(ethc, txId, 3, 40*time.Minute); err != nil {
 			logger.Error("failed to confirm eth transaction", "err", err, "id", id)
 			continue
 		}
+
+		if err := db.CompareAndSwapStatus(key, 1, 2); err != nil {
+			logger.Error("failed to CAS status", "err", err, "id", id)
+			continue
+		}
 	}
+	logger.Info("finish handling")
 	return nil
 }
 
@@ -191,7 +172,6 @@ func generateWithdrawals(wdDB *emt.WdDB, ethc *ethclient.Client, addr string, us
 
 		logger.Info("succeed to generate withdrawals")
 
-		// TODO: set nonce
 		// TODO: dingding notification
 		return
 	}
