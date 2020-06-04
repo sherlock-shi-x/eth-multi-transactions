@@ -26,7 +26,7 @@ func GetBalance(c *ethclient.Client, addr string) (*big.Int, error) {
 
 func PollingTransaction(ethc *ethclient.Client, txid string, threshold int64, timeout time.Duration) error {
 	end := time.Now().Add(timeout)
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(20 * time.Second)
 	cnt := int64(0)
 
 	for range ticker.C {

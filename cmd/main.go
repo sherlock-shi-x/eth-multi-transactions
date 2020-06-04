@@ -24,6 +24,7 @@ type dest struct {
 	addr    string
 	percent *big.Int
 	amt     *big.Int
+	memo    string
 }
 
 func main() {
@@ -83,7 +84,7 @@ func main() {
 		if err := handle(wdDB, ethc, addr, sk); err != nil {
 			logger.Error("failed to handle it", "err", err)
 		}
-		time.Sleep(5 * 60 * time.Second)
+		time.Sleep(30 * 60 * time.Second)
 	}
 }
 
